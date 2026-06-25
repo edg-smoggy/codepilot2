@@ -1,0 +1,9 @@
+.DS_Store
+.env
+.env.*
+!.env.local.example
+.runtime-home/
+dist/
+node_modules/
+runs/
+upstream/openai-codex/

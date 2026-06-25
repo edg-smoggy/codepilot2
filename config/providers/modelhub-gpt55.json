@@ -1,0 +1,39 @@
+{
+  "id": "modelhub-gpt55",
+  "name": "ModelHub GPT-5.5",
+  "baseUrl": "http://127.0.0.1:0/v1",
+  "wireApi": "responses",
+  "defaultModel": "gpt-5.5-2026-04-24",
+  "modelCatalogJson": "config/model-catalogs/modelhub-gpt55.json",
+  "codexInstructions": "upstream-default",
+  "adapter": "modelhub-crawl",
+  "capabilities": {
+    "supportsSystemMessage": true,
+    "supportsDeveloperMessage": false,
+    "developerMessageStrategy": "merge_to_system",
+    "supportsToolCalls": true,
+    "supportsParallelToolCalls": false,
+    "supportsStreamingToolCalls": false,
+    "supportsImageInput": true
+  },
+  "auth": {
+    "type": "env",
+    "envKey": "MODELHUB_AK",
+    "instructions": "Set MODELHUB_AK to a valid ModelHub ak value. Do not include it in provider config."
+  },
+  "supportsWebsockets": false,
+  "requiresOpenAiAuth": false,
+  "requestMaxRetries": 1,
+  "streamMaxRetries": 0,
+  "streamIdleTimeoutMs": 300000,
+  "models": [
+    {
+      "id": "gpt-5.5-2026-04-24",
+      "name": "GPT-5.5 2026-04-24",
+      "inputModalities": ["text", "image"],
+      "supportsToolCalls": true,
+      "supportsParallelToolCalls": false,
+      "notes": "Runs through the local ModelHub crawl-to-Responses adapter. Tool calls are translated between chat tool_calls and Responses function_call items when the gateway returns them."
+    }
+  ]
+}

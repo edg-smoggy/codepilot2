@@ -1,0 +1,25 @@
+{
+  "id": "mock",
+  "name": "Local Mock Responses",
+  "baseUrl": "http://127.0.0.1:0/v1",
+  "wireApi": "responses",
+  "defaultModel": "mock-model",
+  "modelCatalogJson": "config/model-catalogs/mock.json",
+  "auth": {
+    "type": "none"
+  },
+  "supportsWebsockets": false,
+  "requiresOpenAiAuth": false,
+  "requestMaxRetries": 0,
+  "streamMaxRetries": 0,
+  "streamIdleTimeoutMs": 300000,
+  "models": [
+    {
+      "id": "mock-model",
+      "name": "Mock model",
+      "inputModalities": ["text", "image"],
+      "supportsToolCalls": true,
+      "supportsParallelToolCalls": false
+    }
+  ]
+}

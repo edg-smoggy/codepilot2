@@ -1,0 +1,29 @@
+{
+  "id": "ark",
+  "name": "Volcengine Ark",
+  "baseUrl": "https://ark-cn-beijing.bytedance.net/api/v3",
+  "wireApi": "responses",
+  "defaultModel": "ep-20260427114346-pfqwk",
+  "modelCatalogJson": "config/model-catalogs/ark.json",
+  "codexInstructions": "upstream-default",
+  "auth": {
+    "type": "env",
+    "envKey": "ARK_API_KEY",
+    "instructions": "Set ARK_API_KEY to a valid Volcengine Ark API key."
+  },
+  "supportsWebsockets": false,
+  "requiresOpenAiAuth": false,
+  "requestMaxRetries": 2,
+  "streamMaxRetries": 1,
+  "streamIdleTimeoutMs": 300000,
+  "models": [
+    {
+      "id": "ep-20260427114346-pfqwk",
+      "name": "Ark default coding model",
+      "inputModalities": ["text", "image"],
+      "supportsToolCalls": true,
+      "supportsParallelToolCalls": false,
+      "notes": "Initial endpoint from product owner; exact tool-call compatibility must be verified in M2 smoke."
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "name": "internal-coding-agent-codex-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "internal-codex": "src/cli/internal-codex.mjs"
+  },
+  "scripts": {
+    "agent:serve": "node src/agent-server/server.mjs",
+    "doctor": "node src/cli/doctor.mjs",
+    "internal-codex": "node src/cli/internal-codex.mjs",
+    "smoke:api": "node scripts/agent-api-smoke.mjs",
+    "smoke:ark:direct": "node scripts/ark-direct-smoke.mjs",
+    "smoke:ark:turn": "node scripts/ark-turn-smoke.mjs",
+    "smoke:ark:coding": "node scripts/ark-coding-smoke.mjs",
+    "smoke:modelhub:adapter": "node scripts/modelhub-adapter-smoke.mjs",
+    "smoke:modelhub:apply-patch": "node scripts/modelhub-apply-patch-adapter-smoke.mjs",
+    "smoke:modelhub:truncation": "node scripts/modelhub-truncation-adapter-smoke.mjs",
+    "smoke:modelhub:loop": "node scripts/modelhub-codex-loop-smoke.mjs",
+    "smoke:modelhub:matrix": "node scripts/modelhub-task-matrix-smoke.mjs",
+    "smoke:modelhub:html": "node scripts/html-artifact-reliability-smoke.mjs",
+    "smoke:queue": "node scripts/task-queue-smoke.mjs",
+    "smoke:completion-guard": "node scripts/completion-guard-smoke.mjs",
+    "smoke:real-tasks": "node scripts/run-real-task-suite.mjs",
+    "smoke:live-timeline": "node scripts/live-timeline-smoke.mjs",
+    "smoke:app-server": "node scripts/app-server-smoke.mjs",
+    "smoke:app-server:turn": "node scripts/app-server-smoke.mjs --start-turn",
+    "package:macos": "node scripts/package-macos-app.mjs",
+    "package:macos:dmg": "node scripts/package-macos-app.mjs --dmg"
+  }
+}

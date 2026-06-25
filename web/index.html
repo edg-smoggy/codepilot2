@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodePilot - Local Coding Agent</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <div class="brand">
+        <div class="logo">C</div>
+        <span class="brand-name">CodePilot</span>
+      </div>
+    </div>
+    <div class="sidebar-nav">
+      <button class="nav-item nav-button" id="newTaskBtn" type="button">新对话</button>
+      <button class="nav-item nav-button" type="button">搜索</button>
+      <button class="nav-item nav-button" type="button">插件</button>
+      <button class="nav-item nav-button" type="button">自动化</button>
+    </div>
+    <div class="sidebar-section-title">项目</div>
+    <div class="sidebar-list" id="taskList"></div>
+    <div class="sidebar-footer">
+      <span>设置</span>
+      <span class="item-meta" id="serverStatus">连接中</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="main-header">
+      <div style="display:flex;align-items:center;min-width:0;">
+        <span class="session-title" id="sessionTitle">新任务</span>
+        <span class="session-meta" id="sessionMeta">本地运行时</span>
+      </div>
+      <div class="header-actions">
+        <span class="status-pill" id="taskStatus">idle</span>
+        <button class="header-btn" id="environmentBtn">环境诊断</button>
+        <button class="header-btn" id="refreshBtn">刷新历史</button>
+        <button class="header-btn" id="cancelBtn" disabled>取消任务</button>
+      </div>
+    </div>
+
+    <input id="workspaceInput" type="hidden">
+
+    <div class="config-bar">
+      <div class="field">
+        <label for="providerSelect">模型服务</label>
+        <select id="providerSelect"></select>
+      </div>
+      <div class="field">
+        <label for="modelInput">模型</label>
+        <select id="modelInput"></select>
+      </div>
+      <div class="field">
+        <label for="approvalSelect">权限</label>
+        <select id="approvalSelect">
+          <option value="never">自动执行</option>
+          <option value="on-request">请求批准</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="diagnostics-panel hidden" id="diagnosticsPanel"></div>
+
+    <div class="messages" id="messages"></div>
+
+    <div class="input-area">
+      <div class="new-chat-title" id="newChatTitle">我们该做什么？</div>
+      <div class="input-container">
+        <textarea
+          class="input-box"
+          id="inputBox"
+          placeholder="要求后续变更"
+          rows="1"
+        ></textarea>
+        <div class="attachments" id="attachmentList"></div>
+        <div class="input-actions">
+          <button class="attach-btn" id="attachBtn" title="添加 Markdown / 文本文件">+</button>
+          <input
+            id="fileInput"
+            type="file"
+            multiple
+            hidden
+            accept=".md,.markdown,.txt,.json,.jsonl,.csv,.tsv,.log,.png,.jpg,.jpeg,.webp,text/markdown,text/plain,application/json,image/png,image/jpeg,image/webp"
+          >
+          <span class="mode-select" id="modeLabel">权限: 自动执行</span>
+          <button class="send-btn" id="sendBtn" title="发送">↑</button>
+        </div>
+        <div class="workspace-row">
+          <div class="workspace-picker">
+            <button class="workspace-chip" id="workspaceMenuBtn" type="button" title="选择工作区">
+              <svg class="workspace-folder-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3.75 7.5a2.25 2.25 0 0 1 2.25-2.25h4.2c.7 0 1.36.33 1.78.89l.72.96c.14.19.36.3.6.3H18a2.25 2.25 0 0 1 2.25 2.25v6.85A2.25 2.25 0 0 1 18 18.75H6a2.25 2.25 0 0 1-2.25-2.25v-9Z" />
+              </svg>
+              <span class="workspace-chip-label" id="workspaceLabel">选择工作区</span>
+              <span aria-hidden="true">⌄</span>
+            </button>
+            <div class="workspace-menu" id="workspacePopover" hidden>
+              <input class="workspace-search" id="workspaceSearch" placeholder="搜索项目" spellcheck="false">
+              <div class="workspace-options" id="workspaceOptions"></div>
+              <div class="workspace-menu-divider"></div>
+              <button class="workspace-menu-action" id="chooseWorkspaceBtn" type="button">
+                <span aria-hidden="true">+</span>
+                <span>使用现有文件夹</span>
+              </button>
+              <button class="workspace-menu-action" id="defaultWorkspaceBtn" type="button">
+                <span aria-hidden="true">⌂</span>
+                <span>使用默认工作区</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="input-hint">
+        <span>Enter 发送</span>
+        <span>Shift + Enter 换行</span>
+      </div>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
