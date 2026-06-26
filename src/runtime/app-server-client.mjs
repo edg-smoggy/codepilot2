@@ -257,24 +257,31 @@ export class AppServerClient {
     }
 
     let timeout;
+    const hasTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
     return new Promise((resolve, reject) => {
       const waiter = {
         predicate,
         resolve: (message) => {
-          clearTimeout(timeout);
+          if (timeout) {
+            clearTimeout(timeout);
+          }
           resolve(message);
         },
         reject: (error) => {
-          clearTimeout(timeout);
+          if (timeout) {
+            clearTimeout(timeout);
+          }
           reject(error);
         },
       };
-      timeout = setTimeout(() => {
-        this.notificationWaiters = this.notificationWaiters.filter(
-          (candidate) => candidate !== waiter,
-        );
-        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
+      if (hasTimeout) {
+        timeout = setTimeout(() => {
+          this.notificationWaiters = this.notificationWaiters.filter(
+            (candidate) => candidate !== waiter,
+          );
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
       this.notificationWaiters.push(waiter);
     });
   }
@@ -384,6 +391,9 @@ export class AppServerClient {
 }
 
 export function withTimeout(promise, timeoutMs, label) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
   let timeout;
   const timer = new Promise((_, reject) => {
     timeout = setTimeout(

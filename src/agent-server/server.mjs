@@ -502,6 +502,18 @@ function contentTypeFor(filePath) {
   if (ext === ".md" || ext === ".markdown") {
     return "text/markdown; charset=utf-8";
   }
+  if (ext === ".png") {
+    return "image/png";
+  }
+  if (ext === ".jpg" || ext === ".jpeg") {
+    return "image/jpeg";
+  }
+  if (ext === ".webp") {
+    return "image/webp";
+  }
+  if (ext === ".svg") {
+    return "image/svg+xml; charset=utf-8";
+  }
   if ([".txt", ".log", ".jsonl", ".csv", ".tsv"].includes(ext)) {
     return "text/plain; charset=utf-8";
   }

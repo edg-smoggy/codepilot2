@@ -23,7 +23,7 @@ import {
 } from "./lightweight-completion-verifier.mjs";
 
 const DEFAULT_START_TIMEOUT_MS = 90 * 1000;
-const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_TURN_TIMEOUT_MS = null;
 const DEFAULT_MAX_AUTO_CONTINUATIONS = 2;
 const TASK_ID_PATTERN = /^task_[a-z0-9]+_[a-f0-9]+$/;
 const CONVERSATION_ID_PATTERN = /^conv_[a-z0-9]+_[a-f0-9]+$/;

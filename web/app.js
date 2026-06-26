@@ -122,6 +122,7 @@ const els = {
   workspaceInput: document.getElementById("workspaceInput"),
   providerSelect: document.getElementById("providerSelect"),
   modelInput: document.getElementById("modelInput"),
+  composerModelSelect: document.getElementById("composerModelSelect"),
   approvalSelect: document.getElementById("approvalSelect"),
   attachBtn: document.getElementById("attachBtn"),
   fileInput: document.getElementById("fileInput"),
@@ -213,6 +214,11 @@ function bindEvents() {
   });
   els.modelInput.addEventListener("change", () => {
     localStorage.setItem(modelStorageKey(els.providerSelect.value), els.modelInput.value);
+    syncComposerModelSelect();
+  });
+  els.composerModelSelect.addEventListener("change", () => {
+    els.modelInput.value = els.composerModelSelect.value;
+    localStorage.setItem(modelStorageKey(els.providerSelect.value), els.modelInput.value);
   });
   els.approvalSelect.addEventListener("change", () => {
     renderApprovalLabel();
@@ -284,7 +290,8 @@ function bindMessageActions() {
 
     const fileAction = event.target.closest("[data-file-action]");
     if (fileAction && els.messages.contains(fileAction)) {
-      handleFileAction(fileAction);
+      event.preventDefault();
+      await handleFileAction(fileAction);
       return;
     }
 
@@ -668,6 +675,9 @@ function renderModelsForCurrentProvider() {
     els.modelInput.innerHTML = `<option value="">模型不可用</option>`;
     els.modelInput.value = "";
     els.modelInput.disabled = true;
+    els.composerModelSelect.innerHTML = `<option value="">模型不可用</option>`;
+    els.composerModelSelect.value = "";
+    els.composerModelSelect.disabled = true;
     return;
   }
   els.modelInput.innerHTML = models
@@ -678,6 +688,25 @@ function renderModelsForCurrentProvider() {
   const selectedModel = models.some((model) => model.id === savedModel) ? savedModel : defaultModel;
   els.modelInput.value = selectedModel;
   els.modelInput.disabled = false;
+  els.composerModelSelect.innerHTML = models
+    .map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(shortModelLabel(model))}</option>`)
+    .join("");
+  els.composerModelSelect.value = selectedModel;
+  els.composerModelSelect.disabled = false;
+}
+
+function syncComposerModelSelect() {
+  if (!els.composerModelSelect) return;
+  els.composerModelSelect.value = els.modelInput.value;
+}
+
+function shortModelLabel(model) {
+  const value = String(model?.name || model?.id || "");
+  if (/gpt[-\s]?5\.5/i.test(value)) return "5.5";
+  if (/gpt[-\s]?5/i.test(value)) return "5";
+  if (/seed|ark|ep-/i.test(value)) return "Ark";
+  if (/mock/i.test(value)) return "Mock";
+  return value.replace(/^GPT-?/, "").replace(/\s*20\d{2}[-/]\d{2}[-/]\d{2}.*$/i, "").trim() || value;
 }
 
 function modelOptions(provider) {
@@ -1414,7 +1443,7 @@ function taskAgentHtml(task, isLatest, diffCards, diff) {
   const rawFinalText = task.finalMessage || (task.status === "failed"
     ? providerIssue
       ? "模型资源暂时不足，请稍后重试。"
-      : `任务失败：${errorText(task.error) || "unknown error"}`
+      : failureDisplayText(task)
     : null);
   const timeline = liveTimelineFromEvents(events, task);
   const finalAssistant = finalAssistantFromTimeline(timeline);
@@ -1471,16 +1500,26 @@ function timelineWithoutFinalAnswer(timeline, finalText) {
 }
 
 function resultSummaryHtml(task, finalText) {
-  const text = finalText || (task.status === "failed" ? `任务失败：${errorText(task.error) || "unknown error"}` : "");
+  const text = cleanFailurePrefix(finalText || (task.status === "failed" ? failureDisplayText(task) : ""));
   if (!text) return "";
   const failed = task.status === "failed";
-  const providerIssue = providerResourceIssue(task);
   return `
-    <section class="result-section${failed && !providerIssue ? " failed" : ""}">
-      <div class="section-title">${failed ? providerIssue ? "模型资源暂时不足" : "任务失败" : "最终结果"}</div>
+    <section class="result-section">
+      <div class="section-title">${failed ? "处理结果" : "最终结果"}</div>
       <div class="msg-content">${renderMarkdown(text, task)}</div>
     </section>
   `;
+}
+
+function failureDisplayText(task) {
+  const text = errorText(task?.error) || task?.completionVerification?.reason || "任务已结束，但没有返回可展示的结果。";
+  return cleanFailurePrefix(text);
+}
+
+function cleanFailurePrefix(text) {
+  return String(text || "")
+    .replace(/^\s*任务(?:没有完成|失败)\s*[：:]\s*/i, "")
+    .trim();
 }
 
 function processPanelHtml(timeline, task, activity) {
@@ -2069,17 +2108,7 @@ function dateMs(value) {
 function diffSummaryHtml(cards, diff) {
   if (!diff) return "";
   if (!cards.length) {
-    return `
-      <div class="change-summary">
-        <div class="change-info">
-          <span class="change-icon">D</span>
-          <div>
-            <div class="change-text">未检测到 git diff</div>
-            <div class="change-stats">${escapeHtml(diff.reason || "workspace 当前没有未提交变更")}</div>
-          </div>
-        </div>
-      </div>
-    `;
+    return "";
   }
   const adds = cards.reduce((sum, card) => sum + card.adds, 0);
   const removes = cards.reduce((sum, card) => sum + card.removes, 0);
@@ -2549,7 +2578,7 @@ function renderInlineCode(text) {
   const source = String(text ?? "");
   const trimmed = source.trim();
   if (isSafeHttpUrl(trimmed)) {
-    return `<a class="inline-url-code" href="${escapeHtml(new URL(trimmed).href)}" target="_blank" rel="noopener noreferrer"><code>${escapeHtml(source)}</code></a>`;
+    return `<a class="inline-url-code" href="${escapeAttribute(new URL(trimmed).href)}" target="_blank" rel="noopener noreferrer"><code>${escapeHtml(source)}</code></a>`;
   }
   const fileChip = inlineFileChipHtml(trimmed);
   if (fileChip) {
@@ -2559,13 +2588,13 @@ function renderInlineCode(text) {
 }
 
 function inlineFileChipHtml(value) {
-  const match = String(value || "").match(/^(.+\.(?:md|markdown|txt|json|jsonl|csv|tsv|log|html|htm|css|js|jsx|ts|tsx|xml|yaml|yml|py|sql|sh|toml))(?:[:#L](\d+))?$/i);
+  const match = String(value || "").match(/^(.+\.(?:md|markdown|txt|json|jsonl|csv|tsv|log|html|htm|css|js|jsx|ts|tsx|xml|yaml|yml|py|sql|sh|toml|pdf|png|jpg|jpeg|webp|svg))(?:(?::|#L?)(\d+))?$/i);
   if (!match || /^https?:\/\//i.test(value)) {
     return "";
   }
   const [, file, line] = match;
   const lineHtml = line ? `<span class="line">line ${escapeHtml(line)}</span>` : "";
-  return `<span class="file-chip" title="${escapeAttribute(value)}"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6"/></svg>${escapeHtml(file)}${lineHtml}</span>`;
+  return `<a class="file-chip inline-file-chip" href="#" role="button" data-file-action="open" data-resource-path="${escapeAttribute(file)}" title="${escapeAttribute(value)}"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6"/></svg><span class="file-chip-label">${escapeHtml(file)}</span>${lineHtml}</a>`;
 }
 
 function renderLinkedText(text) {
@@ -2592,12 +2621,29 @@ function linkifyUrls(text) {
     const raw = match[0];
     const clean = raw.replace(/[.,;:!?，。！？；：、\])}）】》]+$/u, "");
     const trailing = raw.slice(clean.length);
-    html += renderPlainText(text.slice(lastIndex, match.index));
+    html += linkifyFilePaths(text.slice(lastIndex, match.index));
     html += safeAnchor(clean, clean);
     html += renderPlainText(trailing);
     lastIndex = match.index + raw.length;
   }
-  html += renderPlainText(text.slice(lastIndex));
+  html += linkifyFilePaths(text.slice(lastIndex));
+  return html;
+}
+
+function linkifyFilePaths(text) {
+  const source = String(text ?? "");
+  const pathPattern = /(^|[\s([{'"“‘])((?:~|\.{1,2}|\/|[A-Za-z0-9_.-]+\/)[^\n<>"'`]*?\.(?:md|markdown|txt|json|jsonl|csv|tsv|log|html|htm|css|js|jsx|ts|tsx|xml|yaml|yml|py|sql|sh|toml|pdf|png|jpg|jpeg|webp|svg)(?:(?::|#L?)\d+)?)/gi;
+  let html = "";
+  let lastIndex = 0;
+  let match;
+  while ((match = pathPattern.exec(source))) {
+    const prefix = match[1] || "";
+    const filePath = match[2] || "";
+    html += renderPlainText(source.slice(lastIndex, match.index) + prefix);
+    html += inlineFileChipHtml(filePath) || renderPlainText(filePath);
+    lastIndex = match.index + match[0].length;
+  }
+  html += renderPlainText(source.slice(lastIndex));
   return html;
 }
 
@@ -2607,7 +2653,7 @@ function safeAnchor(url, label) {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return renderPlainText(label);
     }
-    return `<a href="${escapeHtml(parsed.href)}" target="_blank" rel="noopener noreferrer">${renderPlainText(label)}</a>`;
+    return `<a class="link-chip" href="${escapeAttribute(parsed.href)}" target="_blank" rel="noopener noreferrer" title="${escapeAttribute(parsed.href)}"><span class="link-icon">↗</span><span class="link-label">${renderPlainText(label)}</span></a>`;
   } catch {
     return renderPlainText(label);
   }
@@ -2700,15 +2746,17 @@ function resourceCardsHtml(resources, task) {
   const workspacePath = task.workspacePath || els.workspaceInput.value.trim();
   return `
     <section class="delivery">
-      <div class="delivery-title">交付内容（已通过后端校验）</div>
       <div class="resource-list">
       ${resources.map((resource) => {
         if (resource.type === "lark-doc") {
           return larkResourceCardHtml(resource);
         }
+        const media = resource.exists && isImageResource(resource)
+          ? `<img class="resource-image-preview" src="${escapeAttribute(fileDownloadUrl(resource.path, workspacePath))}" alt="${escapeAttribute(resource.name)}">`
+          : `<div class="resource-icon${resource.exists ? " verified" : " missing"}">${escapeHtml(resourceIcon(resource))}</div>`;
         return `
           <div class="resource-card">
-            <div class="resource-icon${resource.exists ? " verified" : " missing"}">${escapeHtml(resourceIcon(resource))}</div>
+            ${media}
             <div class="resource-info">
               <div class="resource-name">${escapeHtml(resource.name)} ${resource.exists ? `<span class="verified-badge">✓ verified</span>` : `<span class="missing-badge">missing</span>`}</div>
               <div class="resource-path">${escapeHtml(resourceMeta(resource, resource.path))} · exists: ${resource.exists ? "true" : "false"}</div>
@@ -2746,6 +2794,18 @@ function resourceIcon(resource) {
   if (extension === "MARKDOWN") return "MD";
   if (extension === "JPEG") return "JPG";
   return extension ? extension.slice(0, 4) : "FILE";
+}
+
+function isImageResource(resource) {
+  return ["png", "jpg", "jpeg", "webp", "svg"].includes(String(resource.extension || fileExtension(resource.path)).toLowerCase());
+}
+
+function fileDownloadUrl(filePath, workspacePath) {
+  const params = new URLSearchParams({
+    path: filePath || "",
+    workspacePath: workspacePath || "",
+  });
+  return `/v1/files/download?${params.toString()}`;
 }
 
 function resourceMeta(resource, fallback) {

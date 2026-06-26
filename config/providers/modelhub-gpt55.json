@@ -7,7 +7,7 @@
   "modelCatalogJson": "config/model-catalogs/modelhub-gpt55.json",
   "codexInstructions": "upstream-default",
   "adapter": "modelhub-crawl",
-  "stream": true,
+  "stream": false,
   "capabilities": {
     "supportsSystemMessage": true,
     "supportsDeveloperMessage": false,

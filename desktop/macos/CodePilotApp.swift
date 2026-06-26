@@ -2,6 +2,10 @@ import AppKit
 import Foundation
 import WebKit
 
+final class DragRegionView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
     private var window: NSWindow?
     private var webView: WKWebView?
@@ -34,14 +38,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let config = WKWebViewConfiguration()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
 
-        let frame = NSRect(x: 0, y: 0, width: 1320, height: 860)
+        let frame = NSRect(x: 0, y: 0, width: 1282, height: 820)
         let window = NSWindow(
             contentRect: frame,
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        window.title = "CodePilot"
+        window.title = ""
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
         window.center()
         window.minSize = NSSize(width: 1040, height: 680)
 
@@ -49,6 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        let dragRegion = DragRegionView(frame: NSRect(x: 264, y: frame.height - 36, width: frame.width - 684, height: 36))
+        dragRegion.autoresizingMask = [.width, .minYMargin]
+        webView.addSubview(dragRegion)
         window.contentView = webView
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
