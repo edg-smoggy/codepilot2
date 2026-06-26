@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import fs from "node:fs";
+import path from "node:path";
 
 import { appendJsonl } from "./jsonl.mjs";
 
@@ -31,7 +32,10 @@ export async function startModelHubCrawlAdapter({
   defaultModel = process.env.MODELHUB_MODEL || DEFAULT_MODEL,
   maxTokens = optionalPositiveInteger(process.env.MODELHUB_MAX_TOKENS),
   requestTimeoutMs = optionalPositiveInteger(process.env.MODELHUB_REQUEST_TIMEOUT_MS) ?? DEFAULT_REQUEST_TIMEOUT_MS,
-  streamUpstream = process.env.MODELHUB_STREAM === "true",
+  streamDefault = false,
+  streamUpstream = resolveStreamUpstream(streamDefault, process.env.MODELHUB_STREAM),
+  rawStreamDumpPath = process.env.MODELHUB_RAW_STREAM_DUMP_PATH || null,
+  rawStreamDumpLimit = optionalPositiveInteger(process.env.MODELHUB_RAW_STREAM_DUMP_LIMIT) ?? 40,
   capabilities = {},
 } = {}) {
   if (!ak) {
@@ -95,6 +99,8 @@ export async function startModelHubCrawlAdapter({
             requestCount,
             transcript,
             requestTimeoutMs,
+            rawStreamDumpPath,
+            rawStreamDumpLimit,
           });
           return;
         }
@@ -146,6 +152,20 @@ export async function startModelHubCrawlAdapter({
             code: classified.code,
             message: classified.message || text || `ModelHub crawl returned HTTP ${upstream.status}`,
             status: upstream.status,
+          });
+          return;
+        }
+        if (!outputItems.length) {
+          appendJsonl(transcript, {
+            direction: "modelhub-adapter",
+            event: "provider-empty-response",
+            status: upstream.status,
+            rawTextPreview: String(upstream.rawText || "").slice(0, 240),
+          });
+          sendResponsesFailure(response, {
+            code: "provider_empty_response",
+            message: "ModelHub returned a successful response without assistant text or tool calls.",
+            status: 502,
           });
           return;
         }
@@ -335,6 +355,13 @@ function optionalPositiveInteger(value) {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function resolveStreamUpstream(defaultValue, envValue) {
+  if (/^(0|false|off|no)$/i.test(String(envValue))) {
+    return false;
+  }
+  return Boolean(defaultValue);
 }
 
 export function responsesToCrawlRequest(request, { defaultModel = DEFAULT_MODEL, maxTokens = null, stream = false } = {}) {
@@ -644,12 +671,28 @@ async function postCrawl({ endpoint, ak, body, requestTimeoutMs = DEFAULT_REQUES
   };
 }
 
-async function streamCrawlAsResponses({ endpoint, ak, body, response, requestCount, transcript, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS }) {
+async function streamCrawlAsResponses({
+  endpoint,
+  ak,
+  body,
+  response,
+  requestCount,
+  transcript,
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  rawStreamDumpPath = null,
+  rawStreamDumpLimit = 40,
+}) {
   const responseId = `resp-modelhub-stream-${requestCount}`;
   const messageId = `msg-modelhub-stream-${requestCount}`;
+  const reasoningItemId = `rs-modelhub-stream-${requestCount}`;
   let text = "";
+  let reasoningText = "";
   let lastPayload = null;
-  let outputItemAdded = false;
+  let messageItemAdded = false;
+  let reasoningItemAdded = false;
+  let messageOutputIndex = null;
+  let reasoningOutputIndex = null;
+  let nextOutputIndex = 0;
   let completed = false;
 
   response.writeHead(200, {
@@ -661,45 +704,151 @@ async function streamCrawlAsResponses({ endpoint, ak, body, response, requestCou
     response: { id: responseId },
   }));
 
+  const ensureReasoningItem = () => {
+    if (reasoningItemAdded) {
+      return;
+    }
+    reasoningOutputIndex = nextOutputIndex;
+    nextOutputIndex += 1;
+    response.write(sseEvent({
+      type: "response.output_item.added",
+      output_index: reasoningOutputIndex,
+      item: {
+        id: reasoningItemId,
+        type: "reasoning",
+        summary: [],
+      },
+    }));
+    response.write(sseEvent({
+      type: "response.reasoning_summary_part.added",
+      item_id: reasoningItemId,
+      output_index: reasoningOutputIndex,
+      summary_index: 0,
+      part: { type: "summary_text", text: "" },
+    }));
+    reasoningItemAdded = true;
+  };
+
+  const ensureMessageItem = () => {
+    if (messageItemAdded) {
+      return;
+    }
+    messageOutputIndex = nextOutputIndex;
+    nextOutputIndex += 1;
+    response.write(sseEvent({
+      type: "response.output_item.added",
+      output_index: messageOutputIndex,
+      item: {
+        type: "message",
+        role: "assistant",
+        id: messageId,
+        content: [{ type: "output_text", text: "" }],
+      },
+    }));
+    messageItemAdded = true;
+  };
+
+  const emitMessageDone = () => {
+    if (!messageItemAdded && !text) {
+      return;
+    }
+    ensureMessageItem();
+    response.write(sseEvent({
+      type: "response.output_item.done",
+      output_index: messageOutputIndex,
+      item: {
+        type: "message",
+        role: "assistant",
+        id: messageId,
+        content: [{ type: "output_text", text }],
+      },
+    }));
+  };
+
+  const emitReasoningDone = () => {
+    if (!reasoningItemAdded) {
+      return;
+    }
+    response.write(sseEvent({
+      type: "response.reasoning_summary_text.done",
+      item_id: reasoningItemId,
+      output_index: reasoningOutputIndex,
+      summary_index: 0,
+      text: reasoningText,
+    }));
+    response.write(sseEvent({
+      type: "response.output_item.done",
+      output_index: reasoningOutputIndex,
+      item: {
+        id: reasoningItemId,
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: reasoningText }],
+      },
+    }));
+  };
+
+  const emitOutputItem = (item) => {
+    const outputIndex = nextOutputIndex;
+    nextOutputIndex += 1;
+    const normalized = normalizeStreamOutputItem(item, requestCount, outputIndex);
+    response.write(sseEvent({
+      type: "response.output_item.added",
+      output_index: outputIndex,
+      item: normalized,
+    }));
+    response.write(sseEvent({
+      type: "response.output_item.done",
+      output_index: outputIndex,
+      item: normalized,
+    }));
+  };
+
   try {
     const result = await postCrawlStream({
       endpoint,
       ak,
       body,
       requestTimeoutMs,
+      rawStreamDumpPath,
+      rawStreamDumpLimit,
       onPayload: (payload) => {
         lastPayload = payload;
-        const delta = extractStreamTextDelta(payload);
-        if (!delta) {
-          return;
-        }
-        if (!outputItemAdded) {
+        const deltas = extractStreamDeltas(payload);
+        if (deltas.reasoningDelta) {
+          ensureReasoningItem();
+          reasoningText += deltas.reasoningDelta;
           response.write(sseEvent({
-            type: "response.output_item.added",
-            item: {
-              type: "message",
-              role: "assistant",
-              id: messageId,
-              content: [{ type: "output_text", text: "" }],
-            },
+            type: "response.reasoning_summary_text.delta",
+            item_id: reasoningItemId,
+            output_index: reasoningOutputIndex,
+            summary_index: 0,
+            delta: deltas.reasoningDelta,
           }));
-          outputItemAdded = true;
         }
-        text += delta;
-        response.write(sseEvent({
-          type: "response.output_text.delta",
-          delta,
-        }));
+        if (deltas.textDelta) {
+          ensureMessageItem();
+          text += deltas.textDelta;
+          response.write(sseEvent({
+            type: "response.output_text.delta",
+            item_id: messageId,
+            output_index: messageOutputIndex,
+            content_index: 0,
+            delta: deltas.textDelta,
+          }));
+        }
       },
     });
 
     if (result.status < 200 || result.status >= 300) {
-      const message = extractAssistantText(lastPayload) || result.rawText || `ModelHub crawl returned HTTP ${result.status}`;
+      const classified = classifyProviderError(extractAssistantText(lastPayload) || result.rawText || "", result.status);
       response.write(sseEvent({
         type: "response.failed",
         response: {
           id: responseId,
-          error: { code: `modelhub_http_${result.status}`, message },
+          error: {
+            code: classified.code,
+            message: classified.message || `ModelHub crawl returned HTTP ${result.status}`,
+          },
         },
       }));
       response.end();
@@ -709,35 +858,139 @@ async function streamCrawlAsResponses({ endpoint, ak, body, response, requestCou
 
     const finalBody = lastPayload ?? parseMaybeJson(result.rawText);
     const outputItems = extractOutputItems(finalBody);
+    const usage = extractUsage(finalBody);
+    const truncation = detectOutputTruncation(finalBody, usage, body);
     const toolItems = outputItems.filter((item) => item.type === "function_call" || item.type === "custom_tool_call");
     if (!text && !toolItems.length) {
       text = extractAssistantText(finalBody) || "";
     }
-
-    const finalItems = toolItems.length
-      ? toolItems
-      : [{
-          type: "message",
-          role: "assistant",
-          id: messageId,
-          content: [{ type: "output_text", text }],
-        }];
-
-    for (const item of finalItems) {
+    if (truncation.truncated) {
+      appendJsonl(transcript, {
+        direction: "modelhub-adapter",
+        event: "provider-output-truncated",
+        stream: true,
+        ...truncation,
+        textPreview: (text || "").slice(0, 240),
+        toolCallCount: toolItems.length,
+      });
       response.write(sseEvent({
-        type: "response.output_item.done",
-        item: {
-          ...item,
-          id: item.id || (item.type === "message" ? messageId : undefined),
-          call_id: item.call_id || (item.type === "function_call" ? `call_modelhub_stream_${requestCount}` : undefined),
+        type: "response.failed",
+        response: {
+          id: responseId,
+          error: {
+            code: "provider_output_truncated",
+            message: truncationMessage(truncation),
+          },
         },
       }));
+      response.end();
+      completed = true;
+      return;
+    }
+    if (!outputItems.length && !text) {
+      appendJsonl(transcript, {
+        direction: "modelhub-adapter",
+        event: "provider-empty-response",
+        stream: true,
+        status: result.status,
+        payloadCount: result.payloadCount,
+        finishReasons: extractFinishReasons(finalBody),
+        usage,
+      });
+      const fallbackBody = { ...body, stream: false };
+      const fallback = await postCrawl({
+        endpoint,
+        ak,
+        body: fallbackBody,
+        requestTimeoutMs,
+      });
+      const fallbackItems = extractOutputItems(fallback.body);
+      const fallbackUsage = extractUsage(fallback.body);
+      const fallbackTruncation = detectOutputTruncation(fallback.body, fallbackUsage, fallbackBody);
+      appendJsonl(transcript, {
+        direction: "modelhub-adapter",
+        event: "empty-stream-nonstream-fallback",
+        status: fallback.status,
+        outputItemCount: fallbackItems.length,
+        truncated: fallbackTruncation.truncated,
+        finishReasons: extractFinishReasons(fallback.body),
+      });
+      if (fallback.status >= 200 && fallback.status < 300 && fallbackTruncation.truncated) {
+        response.write(sseEvent({
+          type: "response.failed",
+          response: {
+            id: responseId,
+            error: {
+              code: "provider_output_truncated",
+              message: truncationMessage(fallbackTruncation),
+            },
+          },
+        }));
+        response.end();
+        completed = true;
+        return;
+      }
+      if (fallback.status >= 200 && fallback.status < 300 && fallbackItems.length) {
+        emitReasoningDone();
+        for (const item of fallbackItems) {
+          emitOutputItem(item);
+        }
+        response.write(sseEvent({
+          type: "response.completed",
+          response: {
+            id: responseId,
+            usage: fallbackUsage,
+          },
+        }));
+        response.end();
+        completed = true;
+        return;
+      }
+      if (fallback.status < 200 || fallback.status >= 300) {
+        const classified = classifyProviderError(extractAssistantText(fallback.body) || fallback.rawText || "", fallback.status);
+        response.write(sseEvent({
+          type: "response.failed",
+          response: {
+            id: responseId,
+            error: {
+              code: classified.code,
+              message: classified.message || `ModelHub crawl returned HTTP ${fallback.status}`,
+            },
+          },
+        }));
+        response.end();
+        completed = true;
+        return;
+      }
+      response.write(sseEvent({
+        type: "response.failed",
+        response: {
+          id: responseId,
+          error: {
+            code: "provider_empty_response",
+            message: "ModelHub returned a successful stream without assistant text or tool calls.",
+          },
+        },
+      }));
+      response.end();
+      completed = true;
+      return;
+    }
+
+    emitReasoningDone();
+    if (messageItemAdded || (text && !toolItems.length)) {
+      emitMessageDone();
+    }
+    if (toolItems.length) {
+      for (const item of toolItems) {
+        emitOutputItem(item);
+      }
     }
     response.write(sseEvent({
       type: "response.completed",
       response: {
         id: responseId,
-        usage: extractUsage(finalBody),
+        usage,
       },
     }));
     response.end();
@@ -747,7 +1000,9 @@ async function streamCrawlAsResponses({ endpoint, ak, body, response, requestCou
       event: "stream-response",
       status: result.status,
       textBytes: Buffer.byteLength(text || ""),
+      reasoningBytes: Buffer.byteLength(reasoningText || ""),
       payloadCount: result.payloadCount,
+      toolCallCount: toolItems.length,
     });
   } catch (error) {
     appendJsonl(transcript, {
@@ -768,7 +1023,15 @@ async function streamCrawlAsResponses({ endpoint, ak, body, response, requestCou
   }
 }
 
-async function postCrawlStream({ endpoint, ak, body, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, onPayload }) {
+async function postCrawlStream({
+  endpoint,
+  ak,
+  body,
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  rawStreamDumpPath = null,
+  rawStreamDumpLimit = 40,
+  onPayload,
+}) {
   const url = new URL(endpoint);
   if (!url.searchParams.has("ak")) {
     url.searchParams.set("ak", ak);
@@ -776,10 +1039,20 @@ async function postCrawlStream({ endpoint, ak, body, requestTimeoutMs = DEFAULT_
   return postJsonStream(url, {
     "content-type": "application/json",
     "X-TT-LOGID": `codepilot-${Date.now().toString(36)}`,
-  }, body, onPayload, { requestTimeoutMs });
+  }, body, onPayload, { requestTimeoutMs, rawStreamDumpPath, rawStreamDumpLimit });
 }
 
-function postJsonStream(url, headers, body, onPayload, { requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+function postJsonStream(
+  url,
+  headers,
+  body,
+  onPayload,
+  {
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    rawStreamDumpPath = null,
+    rawStreamDumpLimit = 40,
+  } = {},
+) {
   const bodyText = JSON.stringify(body);
   const transport = url.protocol === "http:" ? http : https;
   const requestOptions = {
@@ -803,10 +1076,17 @@ function postJsonStream(url, headers, body, onPayload, { requestTimeoutMs = DEFA
       const chunks = [];
       let buffer = "";
       let payloadCount = 0;
+      const rawStreamDump = rawStreamDumpPath
+        ? createRawStreamDump(rawStreamDumpPath, { limit: rawStreamDumpLimit })
+        : null;
 
       const emitPayload = (payload) => {
         if (!payload) return;
         payloadCount += 1;
+        rawStreamDump?.write({
+          index: payloadCount,
+          payload,
+        });
         onPayload?.(payload);
       };
 
@@ -840,6 +1120,11 @@ function postJsonStream(url, headers, body, onPayload, { requestTimeoutMs = DEFA
         if (!isSse && !isJsonl && rawText.trim()) {
           emitPayload(parseMaybeJson(rawText));
         }
+        rawStreamDump?.close({
+          status,
+          contentType,
+          payloadCount,
+        });
         resolve({ status, rawText, payloadCount });
       });
     });
@@ -926,6 +1211,61 @@ function firstExistingPath(paths) {
   return paths.find((item) => item && fs.existsSync(item));
 }
 
+function createRawStreamDump(filePath, { limit = 40 } = {}) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const stream = fs.createWriteStream(filePath, { flags: "w" });
+  let count = 0;
+  const max = Number.isFinite(limit) && limit > 0 ? limit : 40;
+  return {
+    write(event) {
+      if (count >= max) {
+        return;
+      }
+      count += 1;
+      stream.write(`${JSON.stringify({
+        ts: new Date().toISOString(),
+        type: "upstream_payload",
+        index: event.index,
+        payload: sanitizeForDump(event.payload),
+      })}\n`);
+    },
+    close(meta = {}) {
+      stream.write(`${JSON.stringify({
+        ts: new Date().toISOString(),
+        type: "upstream_stream_end",
+        ...sanitizeForDump(meta),
+        dumpedPayloadCount: count,
+        dumpLimit: max,
+      })}\n`);
+      stream.end();
+    },
+  };
+}
+
+function sanitizeForDump(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForDump(item));
+  }
+  if (!value || typeof value !== "object") {
+    return typeof value === "string" ? sanitizeString(value) : value;
+  }
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (/^(ak|api[-_]?key|authorization|token|secret|password)$/i.test(key)) {
+      out[key] = "[REDACTED]";
+    } else {
+      out[key] = sanitizeForDump(child);
+    }
+  }
+  return out;
+}
+
+function sanitizeString(value) {
+  return value
+    .replace(/(ak=)[^&\s"]+/gi, "$1[REDACTED]")
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]");
+}
+
 function extractOutputItems(body) {
   const toolCalls = extractToolCalls(body);
   if (toolCalls.length) {
@@ -948,11 +1288,15 @@ function extractOutputItems(body) {
     });
   }
 
+  const text = extractAssistantText(body);
+  if (!text) {
+    return [];
+  }
   return [{
     type: "message",
     role: "assistant",
     id: "msg-modelhub",
-    content: [{ type: "output_text", text: extractAssistantText(body) || "" }],
+    content: [{ type: "output_text", text }],
   }];
 }
 
@@ -1106,51 +1450,126 @@ function extractToolCalls(body) {
   return [];
 }
 
-function extractStreamTextDelta(body) {
+function extractStreamDeltas(body) {
+  const result = {
+    reasoningDelta: "",
+    textDelta: "",
+    toolCallDelta: null,
+    finishReasons: extractFinishReasons(body),
+    usage: extractUsage(body),
+  };
   if (!body || typeof body !== "object") {
-    return "";
+    return result;
+  }
+
+  if (body.type === "response.reasoning_summary_text.delta" && typeof body.delta === "string") {
+    result.reasoningDelta += body.delta;
+    return result;
   }
   if (body.type === "response.output_text.delta" && typeof body.delta === "string") {
-    return body.delta;
-  }
-  if (typeof body.delta === "string") {
-    return body.delta;
+    result.textDelta += body.delta;
+    return result;
   }
   if (typeof body.output_text_delta === "string") {
-    return body.output_text_delta;
+    result.textDelta += body.output_text_delta;
   }
   if (typeof body.text_delta === "string") {
-    return body.text_delta;
+    result.textDelta += body.text_delta;
+  }
+  if (typeof body.reasoning_delta === "string") {
+    result.reasoningDelta += body.reasoning_delta;
+  }
+  if (typeof body.reasoning_content_delta === "string") {
+    result.reasoningDelta += body.reasoning_content_delta;
+  }
+  if (typeof body.delta === "string" && !body.type) {
+    result.textDelta += body.delta;
   }
 
   const choices = body?.choices ?? body?.data?.choices ?? body?.result?.choices;
   if (Array.isArray(choices) && choices.length) {
-    const delta = choices[0]?.delta ?? choices[0]?.message?.delta;
-    const direct = firstString([
-      delta?.content,
-      delta?.text,
-      delta?.reasoning_content,
-      choices[0]?.text,
-    ]);
-    if (direct) {
-      return direct;
-    }
-    const content = textFromContent(delta?.content);
-    if (content) {
-      return content;
+    for (const choice of choices) {
+      const delta = choice?.delta ?? choice?.message?.delta ?? {};
+      const choiceFinished = Boolean(choice?.finish_reason || choice?.finishReason || choice?.stop_reason || choice?.stopReason);
+      const reasoningDelta = firstString([
+        delta?.reasoning_content,
+        delta?.reasoningContent,
+        delta?.reasoning,
+        choice?.reasoning_content,
+      ]);
+      if (reasoningDelta) {
+        result.reasoningDelta += reasoningDelta;
+      }
+
+      const textDelta = firstString([
+        typeof delta?.content === "string" ? delta.content : null,
+        delta?.text,
+        choiceFinished ? null : choice?.text,
+      ]);
+      if (textDelta) {
+        result.textDelta += textDelta;
+      }
+
+      const contentText = textFromContent(delta?.content);
+      if (contentText && contentText !== textDelta) {
+        result.textDelta += contentText;
+      }
+
+      const toolCalls = delta?.tool_calls ?? delta?.toolCalls;
+      if (Array.isArray(toolCalls) && toolCalls.length) {
+        result.toolCallDelta = toolCalls;
+      }
     }
   }
 
   const output = body?.output ?? body?.data?.output ?? body?.result?.output;
   if (Array.isArray(output)) {
-    return output
-      .flatMap((item) => item?.content ?? [])
-      .filter((part) => part?.type === "output_text_delta" || part?.type === "text_delta")
-      .map((part) => part.delta || part.text || "")
-      .join("");
+    for (const item of output) {
+      for (const part of item?.content ?? []) {
+        if (part?.type === "output_text_delta" || part?.type === "text_delta") {
+          result.textDelta += part.delta || part.text || "";
+        } else if (part?.type === "reasoning_summary_text_delta" || part?.type === "summary_text_delta" || part?.type === "reasoning_text_delta") {
+          result.reasoningDelta += part.delta || part.text || "";
+        }
+      }
+      if (item?.type === "reasoning" && Array.isArray(item.summary)) {
+        for (const summary of item.summary) {
+          if (summary?.type === "summary_text_delta") {
+            result.reasoningDelta += summary.delta || summary.text || "";
+          }
+        }
+      }
+    }
   }
 
-  return "";
+  return result;
+}
+
+function normalizeStreamOutputItem(item, requestCount, outputIndex) {
+  if (item.type === "message") {
+    return {
+      ...item,
+      id: item.id || `msg-modelhub-stream-${requestCount}-${outputIndex}`,
+    };
+  }
+  if (item.type === "function_call") {
+    const callId = item.call_id || item.id || `call_modelhub_stream_${requestCount}_${outputIndex + 1}`;
+    return {
+      ...item,
+      id: item.id || callId,
+      call_id: callId,
+      arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {}),
+    };
+  }
+  if (item.type === "custom_tool_call") {
+    const callId = item.call_id || item.id || `call_modelhub_stream_${requestCount}_${outputIndex + 1}`;
+    return {
+      ...item,
+      id: item.id || callId,
+      call_id: callId,
+    };
+  }
+  return item;
 }
 
 function extractAssistantText(body) {
@@ -1185,7 +1604,7 @@ function extractAssistantText(body) {
     }
   }
 
-  return typeof body === "string" ? body : JSON.stringify(body);
+  return typeof body === "string" ? body : "";
 }
 
 function textFromContent(content) {
@@ -1199,7 +1618,7 @@ function textFromContent(content) {
       .join("");
   }
   if (content && typeof content === "object") {
-    return content.text ?? content.output_text ?? content.input_text ?? JSON.stringify(content);
+    return content.text ?? content.output_text ?? content.input_text ?? "";
   }
   return "";
 }

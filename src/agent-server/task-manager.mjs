@@ -422,6 +422,7 @@ export class TaskManager {
         providerAdapter = await startModelHubCrawlAdapter({
           transcript,
           defaultModel: task.model,
+          streamDefault: provider.stream === true,
           capabilities: provider.capabilities ?? {},
         });
         providerOverride = {
@@ -807,7 +808,7 @@ function createTaskRecord(productHome, request) {
   }
 
   const taskDir = path.join(productHome, "tasks", taskId);
-  const expectedArtifacts = expectedArtifactsFromRequest(request);
+  const expectedArtifacts = expectedArtifactsForTask(productHome, request);
   const task = {
     id: taskId,
     createdAt: new Date().toISOString(),
@@ -860,6 +861,56 @@ function createTaskRecord(productHome, request) {
     task.readyReject = reject;
   });
   return task;
+}
+
+function expectedArtifactsForTask(productHome, request) {
+  const current = expectedArtifactsFromRequest(request);
+  const inherited = inheritedExpectedArtifactsForContinuation(productHome, request, current);
+  return inherited ?? current;
+}
+
+function inheritedExpectedArtifactsForContinuation(productHome, request, current) {
+  if (!isContinuationRequest(current)) {
+    return null;
+  }
+  const conversationId = request.conversationId ?? request.conversation_id;
+  if (!conversationId || !CONVERSATION_ID_PATTERN.test(conversationId)) {
+    return null;
+  }
+  const conversation = loadConversationFromDisk(productHome, conversationId);
+  if (!conversation?.taskIds?.length) {
+    return null;
+  }
+  for (const taskId of [...conversation.taskIds].reverse()) {
+    const priorTask = loadTaskFromDisk(productHome, taskId);
+    const priorExpected = priorTask?.expectedArtifacts;
+    if (!priorExpected || onlyTextAnswer(priorExpected)) {
+      continue;
+    }
+    return {
+      ...JSON.parse(JSON.stringify(priorExpected)),
+      prompt: current.prompt,
+      inheritedFromTaskId: priorTask.id,
+      inheritedFromPrompt: priorExpected.prompt ?? null,
+    };
+  }
+  return null;
+}
+
+function isContinuationRequest(expectedArtifacts) {
+  if (!onlyTextAnswer(expectedArtifacts)) {
+    return false;
+  }
+  const prompt = String(expectedArtifacts?.prompt || "").trim();
+  if (!prompt || prompt.length > 80) {
+    return false;
+  }
+  return /^(继续|接着|继续完成|继续做|继续推进|继续上面|继续刚才|接上|继续吧|接着做|go on|continue)(?:$|[\s，。,.！!？?])/i.test(prompt);
+}
+
+function onlyTextAnswer(expectedArtifacts) {
+  const artifacts = expectedArtifacts?.artifacts ?? [];
+  return artifacts.length === 1 && artifacts[0]?.kind === "text_answer";
 }
 
 function validateTaskCompletion(task, { turnId, pendingGuard = null } = {}) {

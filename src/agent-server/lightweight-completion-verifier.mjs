@@ -120,11 +120,13 @@ export function verifyTaskCompletion(task, { baseline = null } = {}) {
     }
 
     if (artifact.kind === "lark_doc") {
-      const urls = verifiedLarkDocUrlsFromEvents(task.events ?? []);
-      if (urls.length) {
-        completedArtifacts.push(...urls.map((url) => ({
+      const docs = verifiedLarkDocsFromEvents(task.events ?? []);
+      if (docs.length) {
+        completedArtifacts.push(...docs.map((doc) => ({
           ...artifact,
-          url,
+          url: doc.url,
+          name: doc.title || "飞书文档",
+          title: doc.title || null,
           source: "tool_output",
         })));
       } else {
@@ -225,11 +227,12 @@ function isUnsafeArtifactPath(workspacePath, relativePath) {
   return absolutePath.includes(`${path.sep}.app${path.sep}Contents${path.sep}Resources${path.sep}`);
 }
 
-function verifiedLarkDocUrlsFromEvents(events) {
-  return uniqueStrings(events.flatMap((event) => {
+function verifiedLarkDocsFromEvents(events) {
+  const byUrl = new Map();
+  for (const event of events) {
     const item = event.params?.item;
     if (event.type !== "item.completed" || !item || item.type === "agentMessage" || item.type === "userMessage" || item.error) {
-      return [];
+      continue;
     }
     const text = [
       item.text,
@@ -240,10 +243,18 @@ function verifiedLarkDocUrlsFromEvents(events) {
       item.commandActions,
     ].map((value) => typeof value === "string" ? value : JSON.stringify(value ?? "")).join("\n");
     if (!/lark-cli|lark|飞书|docx/i.test(text)) {
-      return [];
+      continue;
     }
-    return text.match(LARK_DOC_URL_PATTERN) ?? [];
-  }));
+    for (const url of text.match(LARK_DOC_URL_PATTERN) ?? []) {
+      if (!byUrl.has(url)) {
+        byUrl.set(url, {
+          url,
+          title: inferLarkDocumentTitle(text, url),
+        });
+      }
+    }
+  }
+  return [...byUrl.values()];
 }
 
 function unverifiedLarkDocUrlsFromEvents(events) {
@@ -329,6 +340,43 @@ function reasonFromMissing({ missingArtifacts, unrecoverableErrors }) {
     return `缺少交付物：${missingArtifacts.map((item) => item.kind).join("、")}`;
   }
   return "任务未通过完成校验";
+}
+
+function inferLarkDocumentTitle(text, url) {
+  const lines = String(text || "").split(/\r?\n/);
+  const index = lines.findIndex((line) => line.includes(url));
+  const candidates = [];
+  if (index >= 0) {
+    candidates.push(lines[index].slice(0, lines[index].indexOf(url)));
+    candidates.push(lines[index - 1] || "");
+    candidates.push(lines[index - 2] || "");
+  }
+  const titlePattern = /(?:title|标题|文档名|文档标题|name)\s*["'：:=]\s*["']?([^"',\n<>]{2,80})/gi;
+  let match;
+  while ((match = titlePattern.exec(text))) {
+    candidates.push(match[1]);
+  }
+  for (const candidate of candidates) {
+    const title = cleanDeliveryTitle(candidate);
+    if (title) {
+      return title;
+    }
+  }
+  return "";
+}
+
+function cleanDeliveryTitle(value) {
+  const cleaned = String(value || "")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/^[\s\-*•·]+/, "")
+    .replace(/[`*_#]/g, "")
+    .replace(/^(?:已创建|创建了)?\s*(?:文档链接|链接|标题|飞书文档|文档|docx|url)\s*[:：=]\s*/i, "")
+    .replace(/["'<>]/g, "")
+    .trim();
+  if (!cleaned || cleaned.length > 80) {
+    return "";
+  }
+  return cleaned;
 }
 
 function uniqueStrings(values) {

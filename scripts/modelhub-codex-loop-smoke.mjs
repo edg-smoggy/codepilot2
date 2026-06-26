@@ -228,6 +228,7 @@ function summarizeCrawlRequest(body) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   return {
     model: body.model,
+    stream: body.stream,
     toolNames: Array.isArray(body.tools)
       ? body.tools.map((tool) => tool.function?.name || tool.name).filter(Boolean)
       : [],

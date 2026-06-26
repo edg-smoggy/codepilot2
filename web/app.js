@@ -61,10 +61,13 @@ const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
 const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES = 12 * 1024 * 1024;
 const MAX_IMAGE_ATTACHMENTS = 4;
-const TEXT_ATTACHMENT_EXTENSIONS = new Set(["md", "markdown", "txt", "json", "jsonl", "csv", "tsv", "log"]);
+const TEXT_ATTACHMENT_EXTENSIONS = new Set([
+  "md", "markdown", "txt", "json", "jsonl", "csv", "tsv", "log",
+  "html", "htm", "css", "js", "jsx", "ts", "tsx", "xml", "yaml", "yml",
+  "py", "sql", "sh", "toml",
+]);
 const IMAGE_ATTACHMENT_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp"]);
 const IMAGE_ATTACHMENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
-const RESOURCE_FILE_EXTENSIONS = new Set(["md", "markdown", "txt", "json", "jsonl", "csv", "tsv", "log", "html", "pdf", "png", "jpg", "jpeg", "webp"]);
 const FALLBACK_PROVIDERS = [
   {
     id: "modelhub-gpt55",
@@ -186,6 +189,7 @@ async function init() {
 }
 
 function bindEvents() {
+  bindMessageActions();
   els.sendBtn.addEventListener("click", () => {
     if (canCancelActiveTask()) {
       cancelActiveTask();
@@ -215,7 +219,7 @@ function bindEvents() {
   });
   els.inputBox.addEventListener("input", () => autoResize(els.inputBox));
   els.inputBox.addEventListener("paste", async (event) => {
-    const files = imageFilesFromClipboard(event.clipboardData);
+    const files = filesFromClipboard(event.clipboardData);
     if (!files.length) {
       return;
     }
@@ -256,6 +260,40 @@ function bindEvents() {
     closeWorkspaceMenu();
   });
   document.addEventListener("click", closeWorkspaceMenu);
+}
+
+function bindMessageActions() {
+  els.messages.addEventListener("click", async (event) => {
+    const thinkHead = event.target.closest(".think-head");
+    if (thinkHead && els.messages.contains(thinkHead)) {
+      thinkHead.closest(".think-block")?.classList.toggle("collapsed");
+      return;
+    }
+
+    const toolHeader = event.target.closest(".tool-header");
+    if (toolHeader && els.messages.contains(toolHeader)) {
+      toolHeader.closest(".tool-block")?.classList.toggle("expanded");
+      return;
+    }
+
+    const serverRequest = event.target.closest("[data-server-request]");
+    if (serverRequest && els.messages.contains(serverRequest)) {
+      resolveServerRequest(serverRequest);
+      return;
+    }
+
+    const fileAction = event.target.closest("[data-file-action]");
+    if (fileAction && els.messages.contains(fileAction)) {
+      handleFileAction(fileAction);
+      return;
+    }
+
+    const copyButton = event.target.closest("[data-copy-text]");
+    if (copyButton && els.messages.contains(copyButton)) {
+      await navigator.clipboard.writeText(copyButton.dataset.copyText || "");
+      showToast("已复制");
+    }
+  });
 }
 
 async function loadTasks() {
@@ -700,7 +738,7 @@ async function readAttachment(file) {
   if (isTextAttachment(file)) {
     return readTextAttachment(file);
   }
-  throw new Error(`暂不支持 ${file.name}，支持 Markdown、文本和 PNG/JPG/WebP 图片`);
+  throw new Error(`暂不支持 ${file.name}，支持 Markdown、HTML、代码文本和 PNG/JPG/WebP 图片`);
 }
 
 async function readTextAttachment(file) {
@@ -744,6 +782,13 @@ function isImageAttachment(file) {
   return IMAGE_ATTACHMENT_TYPES.has(type) || IMAGE_ATTACHMENT_EXTENSIONS.has(extension);
 }
 
+function filesFromClipboard(clipboardData) {
+  return [
+    ...imageFilesFromClipboard(clipboardData),
+    ...htmlFilesFromClipboard(clipboardData),
+  ];
+}
+
 function imageFilesFromClipboard(clipboardData) {
   if (!clipboardData?.items) return [];
   return [...clipboardData.items]
@@ -757,6 +802,40 @@ function imageFilesFromClipboard(clipboardData) {
         : new File([file], `pasted-image-${Date.now()}-${index + 1}.${extension}`, { type: file.type || "image/png" });
     })
     .filter(Boolean);
+}
+
+function htmlFilesFromClipboard(clipboardData) {
+  const html = clipboardData?.getData?.("text/html") || "";
+  const plain = clipboardData?.getData?.("text/plain") || "";
+  const source = htmlSourceFromClipboard(html, plain);
+  if (!source) {
+    return [];
+  }
+  return [
+    new File([source], `pasted-html-${Date.now()}.html`, { type: "text/html" }),
+  ];
+}
+
+function htmlSourceFromClipboard(html, plain) {
+  const trimmedPlain = String(plain || "").trim();
+  if (looksLikeHtmlSource(trimmedPlain)) {
+    return trimmedPlain;
+  }
+  if (trimmedPlain) {
+    return "";
+  }
+  const trimmedHtml = String(html || "").trim();
+  return looksLikeHtmlSource(trimmedHtml) ? trimmedHtml : "";
+}
+
+function looksLikeHtmlSource(text) {
+  const value = String(text || "").trim();
+  if (!value.startsWith("<")) {
+    return false;
+  }
+  return /^<!doctype\s+html\b/i.test(value)
+    || /^<html[\s>]/i.test(value)
+    || /^<(?:head|body|main|section|article|div|span|style|script|canvas|svg|table|form|button|input|template)\b/i.test(value);
 }
 
 function imageExtensionForType(type) {
@@ -1204,68 +1283,173 @@ function renderTask() {
   renderDiagnosticsPanel();
 
   const diffCards = parseDiffCards(state.activeDiff?.diff || "");
-
-  els.messages.innerHTML = tasks.map((task) => taskMessageHtml(task, task.id === latestTask.id, diffCards, state.activeDiff)).join("");
-
-  els.messages.querySelectorAll(".tool-block").forEach((block) => {
-    block.querySelector(".tool-header").addEventListener("click", () => block.classList.toggle("expanded"));
-  });
-  els.messages.querySelectorAll("[data-server-request]").forEach((button) => {
-    button.addEventListener("click", () => resolveServerRequest(button));
-  });
-  els.messages.querySelectorAll("[data-file-action]").forEach((button) => {
-    button.addEventListener("click", () => handleFileAction(button));
-  });
-  els.messages.querySelectorAll("[data-copy-text]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await navigator.clipboard.writeText(button.dataset.copyText || "");
-      showToast("已复制");
-    });
-  });
-  scrollMessagesToBottom();
+  const shouldStickToBottom = isMessagesNearBottom();
+  renderTaskTurns(tasks, latestTask, diffCards, state.activeDiff);
+  if (shouldStickToBottom) {
+    scrollMessagesToBottom();
+  }
 }
 
-function taskMessageHtml(task, isLatest, diffCards, diff) {
+function renderTaskTurns(tasks, latestTask, diffCards, diff) {
+  const desiredKeys = new Set();
+  tasks.forEach((task, index) => {
+    const key = renderTaskKey(task, index);
+    desiredKeys.add(key);
+    let turn = els.messages.querySelector(`[data-task-turn="${CSS.escape(key)}"]`);
+    if (!turn) {
+      turn = document.createElement("div");
+      turn.className = "task-turn";
+      turn.dataset.taskTurn = key;
+      turn.innerHTML = `
+        <div class="message">
+          <div class="message-user"></div>
+        </div>
+        <div class="message">
+          <div class="message-agent"></div>
+        </div>
+      `;
+      els.messages.appendChild(turn);
+    }
+    const user = turn.querySelector(".message-user");
+    const agent = turn.querySelector(".message-agent");
+    const userText = userPromptFromArtifact(task) || "新任务";
+    if (user.textContent !== userText) {
+      user.textContent = userText;
+    }
+    renderTaskAgent(agent, task, task.id === latestTask.id, diffCards, diff);
+  });
+
+  els.messages.querySelectorAll("[data-task-turn]").forEach((turn) => {
+    if (!desiredKeys.has(turn.dataset.taskTurn)) {
+      turn.remove();
+    }
+  });
+}
+
+function renderTaskKey(task, index) {
+  return String(task.id || task.taskId || `${task.createdAt || "task"}:${index}`);
+}
+
+function renderTaskAgent(agent, task, isLatest, diffCards, diff) {
+  const html = taskAgentHtml(task, isLatest, diffCards, diff);
+  if (isTerminalStatus(task.status)) {
+    setHtmlIfChanged(agent, html);
+    return;
+  }
+  patchRunningAgent(agent, html);
+}
+
+function patchRunningAgent(agent, html) {
+  const template = document.createElement("template");
+  template.innerHTML = html.trim();
+  patchChildrenByKey(agent, [...template.content.childNodes]);
+}
+
+function patchChildrenByKey(parent, nextNodes) {
+  const keyed = new Map([...parent.children].map((child) => [child.dataset.renderKey, child]).filter(([key]) => key));
+  const nextKeyed = new Set();
+  for (const next of nextNodes) {
+    if (next.nodeType !== Node.ELEMENT_NODE) {
+      continue;
+    }
+    const key = next.dataset.renderKey || `anon:${nextKeyed.size}`;
+    next.dataset.renderKey = key;
+    nextKeyed.add(key);
+    const current = keyed.get(key);
+    if (!current) {
+      parent.appendChild(next);
+      continue;
+    }
+    patchElement(current, next);
+    parent.appendChild(current);
+  }
+  [...parent.children].forEach((child) => {
+    if (!nextKeyed.has(child.dataset.renderKey)) {
+      child.remove();
+    }
+  });
+}
+
+function patchElement(current, next) {
+  if (current.dataset.streamText === "true" && next.dataset.streamText === "true") {
+    current.className = next.className;
+    current.dataset.renderValue = next.dataset.renderValue || "";
+    const text = next.dataset.renderValue || "";
+    const target = current.querySelector("[data-stream-content]") || current;
+    if (target.textContent !== text) {
+      target.textContent = text;
+    }
+    return;
+  }
+
+  const keepDetails = new Map([...current.querySelectorAll("details[data-detail-key]")].map((details) => [details.dataset.detailKey, details.open]));
+  if (current.dataset.renderSig !== next.dataset.renderSig || current.innerHTML !== next.innerHTML || current.className !== next.className) {
+    current.className = next.className;
+    for (const attr of [...current.attributes]) {
+      if (!next.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+    }
+    for (const attr of [...next.attributes]) {
+      current.setAttribute(attr.name, attr.value);
+    }
+    current.innerHTML = next.innerHTML;
+    for (const details of current.querySelectorAll("details[data-detail-key]")) {
+      const existing = keepDetails.get(details.dataset.detailKey);
+      if (existing != null) {
+        details.open = existing;
+      }
+    }
+  }
+}
+
+function setHtmlIfChanged(element, html) {
+  if (element.dataset.htmlSig === html) return;
+  element.dataset.htmlSig = html;
+  element.innerHTML = html;
+}
+
+function taskAgentHtml(task, isLatest, diffCards, diff) {
   const events = task.events || [];
-  const userText = userPromptFromArtifact(task);
   const terminal = isTerminalStatus(task.status);
-  const rawFinalText = task.finalMessage || (task.status === "failed" ? `任务失败：${errorText(task.error) || "unknown error"}` : null);
+  const providerIssue = providerResourceIssue(task);
+  const rawFinalText = task.finalMessage || (task.status === "failed"
+    ? providerIssue
+      ? "模型资源暂时不足，请稍后重试。"
+      : `任务失败：${errorText(task.error) || "unknown error"}`
+    : null);
   const timeline = liveTimelineFromEvents(events, task);
   const finalAssistant = finalAssistantFromTimeline(timeline);
   const finalText = rawFinalText || (terminal ? finalAssistant?.text : null);
-  const processTimeline = terminal ? timelineWithoutFinalAnswer(timeline, finalText) : timeline;
+  const processTimeline = processTimelineFromTimeline(terminal ? timelineWithoutFinalAnswer(timeline, finalText) : timeline);
+  const answerTimeline = answerTimelineFromTimeline(timeline);
   const showFallbackFinal = !terminal && finalText && !timelineContainsText(timeline, finalText);
-  const showFallbackActivity = !timeline.length && (isRunning(task.status) || events.some((event) => eventLabel(event)));
-  const resources = terminal ? resourcesFromText(finalText || timelineText(timeline), task) : [];
-  const terminalBody = terminal ? `
+  const fallbackActivity = activityFromEvents(events, task);
+  const resources = terminal ? resourcesFromCompletedArtifacts(task?.completedArtifacts || []) : [];
+  return terminal ? `
         ${resultSummaryHtml(task, finalText)}
         ${resourceCardsHtml(resources, task)}
         ${isLatest ? diffSummaryHtml(diffCards, diff) : ""}
         ${isLatest ? diffCards.slice(0, 6).map(diffCardHtml).join("") : ""}
-        ${processPanelHtml(processTimeline, task, activityFromEvents(events, task))}
+        ${processPanelHtml(processTimeline, task, fallbackActivity)}
         ${artifactHtml(task)}
         ${reactionBarHtml(task, finalText)}
   ` : `
-        ${agentStatusHtml(task)}
+        ${processPanelHtml(processTimeline, task, fallbackActivity)}
         ${pendingApprovalsHtml(task)}
-        ${liveTimelineHtml(timeline, task)}
-        ${showFallbackFinal ? `<div class="msg-content">${renderMarkdown(finalText, task)}</div>` : ""}
-        ${showFallbackActivity ? activityHtml(activityFromEvents(events, task), task) : ""}
+        ${liveTimelineHtml(answerTimeline, task)}
+        ${showFallbackFinal ? `<div class="msg-content" data-render-key="fallback-final">${renderMarkdown(finalText, task)}</div>` : ""}
         ${isLatest ? diffSummaryHtml(diffCards, diff) : ""}
         ${isLatest ? diffCards.slice(0, 6).map(diffCardHtml).join("") : ""}
         ${artifactHtml(task)}
         ${reactionBarHtml(task, finalText)}
   `;
-  return `
-    <div class="message">
-      <div class="message-user">${escapeHtml(userText || "新任务")}</div>
-    </div>
-    <div class="message">
-      <div class="message-agent">
-        ${terminalBody}
-      </div>
-    </div>
-  `;
+}
+
+function processTimelineFromTimeline(timeline) {
+  return timeline.filter((item) => item.kind !== "assistant" && item.kind !== "reasoning");
+}
+
+function answerTimelineFromTimeline(timeline) {
+  return timeline.filter((item) => item.kind === "assistant");
 }
 
 function finalAssistantFromTimeline(timeline) {
@@ -1286,20 +1470,14 @@ function timelineWithoutFinalAnswer(timeline, finalText) {
   });
 }
 
-function timelineText(timeline) {
-  return timeline
-    .filter((item) => item.kind === "assistant" || item.kind === "reasoning" || item.kind === "notice")
-    .map((item) => item.text || "")
-    .join("\n");
-}
-
 function resultSummaryHtml(task, finalText) {
   const text = finalText || (task.status === "failed" ? `任务失败：${errorText(task.error) || "unknown error"}` : "");
   if (!text) return "";
   const failed = task.status === "failed";
+  const providerIssue = providerResourceIssue(task);
   return `
-    <section class="result-section${failed ? " failed" : ""}">
-      <div class="section-title">${failed ? "任务失败" : "最终结果"}</div>
+    <section class="result-section${failed && !providerIssue ? " failed" : ""}">
+      <div class="section-title">${failed ? providerIssue ? "模型资源暂时不足" : "任务失败" : "最终结果"}</div>
       <div class="msg-content">${renderMarkdown(text, task)}</div>
     </section>
   `;
@@ -1314,13 +1492,19 @@ function processPanelHtml(timeline, task, activity) {
   if (!body) return "";
   const count = timeline.length || activity.length;
   const failed = task.status === "failed";
+  const running = isRunning(task.status);
+  const duration = taskElapsedLabel(task);
+  const title = running ? "正在思考" : "已处理";
+  const durationText = running ? ` · ${duration}` : ` ${duration}`;
   return `
-    <div class="tool-block process-panel${failed ? " failed" : ""}">
-      <div class="tool-header">
-        <span class="tool-label">${failed ? "执行过程" : "执行过程"} ${count} 项</span>
-        <span class="tool-chevron">▶</span>
+    <div class="think-block process-panel${failed ? " failed" : ""}${running ? "" : " collapsed"}" data-render-key="process-panel" data-detail-key="process:${escapeAttribute(task.id || "task")}">
+      <div class="think-head">
+        <div class="think-spinner"></div>
+        <span class="think-title">${escapeHtml(title)}<span class="duration">${escapeHtml(durationText)}</span></span>
+        <span class="think-count">${count} 项</span>
+        <span class="think-chevron">▾</span>
       </div>
-      <div class="tool-body">
+      <div class="think-body">
         ${body}
       </div>
     </div>
@@ -1641,22 +1825,25 @@ function liveTimelineFromEvents(events, artifact) {
 
 function liveTimelineHtml(timeline, task) {
   if (!timeline.length) return "";
-  return `<div class="live-timeline">${timeline.map((item) => liveTimelineItemHtml(item, task)).join("")}</div>`;
+  return `<div class="live-timeline" data-render-key="timeline">${timeline.map((item) => liveTimelineItemHtml(item, task)).join("")}</div>`;
 }
 
 function liveTimelineItemHtml(item, task) {
   if (item.kind === "assistant") {
     const phaseClass = item.phase === "final_answer" ? "final-answer" : "commentary";
-    return `<div class="live-assistant msg-content ${phaseClass}">${renderMarkdown(item.text, task)}</div>`;
+    const pendingClass = item.status === "pending" ? " streaming" : "";
+    const cursor = item.status === "pending" ? `<span class="stream-cursor"></span>` : "";
+    return `<div class="live-assistant msg-content ${phaseClass}${pendingClass}" data-render-key="${escapeAttribute(item.key)}" data-stream-text="true" data-render-value="${escapeAttribute(item.text || "")}"><span data-stream-content>${escapeHtml(item.text || "")}</span>${cursor}</div>`;
   }
   if (item.kind === "reasoning") {
-    return `<div class="live-reasoning">${renderMarkdown(item.text)}</div>`;
+    return "";
   }
   if (item.kind === "notice") {
     const failed = item.status === "failed";
     const warning = item.status === "warning";
     return liveToolHtml({
       ...item,
+      key: item.key,
       icon: failed ? "x" : warning ? "!" : "i",
       title: failed ? `运行错误：${item.text}` : `运行提示：${item.text}`,
       detail: item.text,
@@ -1673,27 +1860,29 @@ function liveTimelineItemHtml(item, task) {
 
 function liveToolHtml(view) {
   const status = view.status || "";
+  const statusClass = status === "pending" ? "run" : status === "failed" ? "failed" : "done";
+  const detailKey = view.key || view.title || "tool";
+  const detailOpen = status === "pending" ? " open" : "";
+  const icon = statusClass === "done" ? "✓" : statusClass === "failed" ? "×" : (view.icon || "·");
   const copyButton = view.copyText ? `
     <button class="live-tool-copy" type="button" data-copy-text="${escapeAttribute(view.copyText)}" title="复制完整命令">复制</button>
   ` : "";
   const detail = view.detailHtml ? `
-    <details class="live-tool-detail">
+    <details class="live-tool-detail" data-detail-key="${escapeAttribute(detailKey)}"${detailOpen}>
       <summary>${escapeHtml(view.detailLabel || "查看详情")}</summary>
       ${view.detailHtml}
     </details>
   ` : view.detail ? `
-    <details class="live-tool-detail">
+    <details class="live-tool-detail" data-detail-key="${escapeAttribute(detailKey)}"${detailOpen}>
       <summary>${escapeHtml(view.detailLabel || "查看详情")}</summary>
       <pre>${escapeHtml(limitText(view.detail, 6000))}</pre>
     </details>
   ` : "";
   return `
-    <div class="live-tool ${escapeHtml(status)}">
-      <div class="live-tool-line">
-        <span class="live-tool-icon">${escapeHtml(view.icon || "·")}</span>
-        <span class="live-tool-title" title="${escapeAttribute(view.title || "")}">${escapeHtml(view.title || "")}</span>
-        ${copyButton}
-      </div>
+    <div class="tool-line ${escapeHtml(statusClass)}" data-render-key="${escapeAttribute(view.key || detailKey)}" data-render-sig="${escapeAttribute(`${status}:${view.title || ""}:${view.detail || ""}:${view.detailHtml || ""}`)}">
+      <span class="tool-icon">${escapeHtml(icon)}</span>
+      <span class="live-tool-title" title="${escapeAttribute(view.title || "")}">${escapeHtml(view.title || "")}</span>
+      ${copyButton}
       ${detail}
     </div>
   `;
@@ -1708,6 +1897,7 @@ function commandTimelineView(item) {
       ? `命令失败 ${command}${duration}`
       : `已运行 1 条命令 ${command}${duration}`;
   return {
+    key: item.key,
     status: item.status,
     icon: "$",
     title,
@@ -1759,12 +1949,39 @@ function fileTimelineView(item) {
   const verb = item.status === "pending" ? "正在编辑" : item.status === "failed" ? "编辑失败" : "已编辑";
   const statsText = stats.adds || stats.removes ? ` +${stats.adds} -${stats.removes}` : "";
   return {
+    key: item.key,
     status: item.status,
     icon: "D",
     title: `${verb} ${count} 个文件${statsText}`,
-    detail: files.length ? files.join("\n") : "",
-    detailLabel: "文件列表",
+    detailHtml: fileChangeDetailHtml(changes, files),
+    detail: changes.length ? "" : files.join("\n"),
+    detailLabel: changes.length ? "查看文件变更" : "文件列表",
   };
+}
+
+function fileChangeDetailHtml(changes, files) {
+  if (!changes.length) {
+    return files.length ? `<pre>${escapeHtml(files.join("\n"))}</pre>` : "";
+  }
+  return changes.slice(0, 6).map((change) => {
+    const file = change.path || change.file || change.filePath || "file";
+    const diff = String(change.diff || "");
+    const rows = diff ? diff.split(/\r?\n/).slice(0, 80).map((line) => {
+      const klass = line.startsWith("+") && !line.startsWith("+++") ? "add"
+        : line.startsWith("-") && !line.startsWith("---") ? "rm"
+          : line.startsWith("@@") ? "meta"
+            : "";
+      return `<span class="diff-row ${klass}">${escapeHtml(line)}</span>`;
+    }).join("") : `<span class="diff-row meta">${escapeHtml(file)}</span>`;
+    return `
+      <div class="diff-card">
+        <div class="diff-head">
+          <span class="diff-file">${escapeHtml(file)}</span>
+        </div>
+        <div class="diff-body">${rows}</div>
+      </div>
+    `;
+  }).join("");
 }
 
 function toolTimelineView(item) {
@@ -1781,6 +1998,7 @@ function toolTimelineView(item) {
   if (item.result != null) detailParts.push(`result:\n${formatJsonLike(item.result)}`);
   if (item.error) detailParts.push(`error:\n${errorText(item.error)}`);
   return {
+    key: item.key,
     status: item.status,
     icon: "◇",
     title,
@@ -1829,6 +2047,25 @@ function formatDurationMs(ms) {
   return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}s`;
 }
 
+function taskElapsedLabel(task) {
+  return formatDurationMs(taskElapsedMs(task) || 0) || "0ms";
+}
+
+function taskElapsedMs(task) {
+  const events = task?.events || [];
+  const starts = [task?.startedAt, task?.createdAt, events[0]?.ts].map(dateMs).filter(Number.isFinite);
+  const start = starts.length ? Math.min(...starts) : Date.now();
+  const ends = [task?.finishedAt, events.at(-1)?.ts].map(dateMs).filter(Number.isFinite);
+  const end = isRunning(task?.status) ? Date.now() : (ends.length ? Math.max(...ends) : Date.now());
+  return Math.max(0, end - start);
+}
+
+function dateMs(value) {
+  if (!value) return NaN;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
 function diffSummaryHtml(cards, diff) {
   if (!diff) return "";
   if (!cards.length) {
@@ -1864,16 +2101,16 @@ function diffSummaryHtml(cards, diff) {
 
 function diffCardHtml(card) {
   const lines = card.lines.slice(0, 220).map((line) => {
-    const klass = line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "remove" : line.startsWith("@@") || line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("new file") ? "meta" : "";
-    return `<span class="diff-line ${klass}">${escapeHtml(line || " ")}</span>`;
+    const klass = line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "rm" : line.startsWith("@@") || line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("new file") ? "meta" : "";
+    return `<span class="diff-row ${klass}">${escapeHtml(line || " ")}</span>`;
   }).join("");
   return `
     <div class="diff-card">
-      <div class="diff-card-header">
+      <div class="diff-head">
         <span class="diff-file">${escapeHtml(card.file)}</span>
-        <span class="diff-stats"><span class="stat-add">+${card.adds}</span> <span class="stat-remove">-${card.removes}</span></span>
+        <span class="diff-stats"><span class="stat-add">+${card.adds}</span> <span class="stat-rm">−${card.removes}</span></span>
       </div>
-      <div class="diff-content">${lines}</div>
+      <div class="diff-body">${lines}</div>
     </div>
   `;
 }
@@ -2173,11 +2410,37 @@ function renderMarkdown(text) {
   while ((match = fencePattern.exec(source))) {
     html += renderMarkdownBlocks(source.slice(lastIndex, match.index));
     const lang = match[1]?.trim();
-    html += `<pre><code${lang ? ` data-lang="${escapeHtml(lang)}"` : ""}>${escapeHtml(match[2].replace(/\n$/, ""))}</code></pre>`;
+    const code = match[2].replace(/\n$/, "");
+    html += `<pre><code${lang ? ` data-lang="${escapeHtml(lang)}"` : ""}>${highlightCode(code, lang)}</code></pre>`;
     lastIndex = fencePattern.lastIndex;
   }
   html += renderMarkdownBlocks(source.slice(lastIndex));
   return html || "<p></p>";
+}
+
+function highlightCode(code, lang = "") {
+  const language = String(lang || "").toLowerCase();
+  if (!/\b(js|javascript|ts|typescript|jsx|tsx|mjs|cjs|json|jsonl|css|html|xml|bash|sh|zsh|python|py)\b/.test(language)) {
+    return escapeHtml(code);
+  }
+  const tokenPattern = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/|\b(?:async|await|break|case|catch|class|const|continue|def|default|else|export|finally|for|from|function|if|import|in|let|new|null|return|throw|try|true|false|var|while|yield)\b|\b[A-Za-z_$][\w$]*(?=\s*\())/g;
+  let html = "";
+  let lastIndex = 0;
+  for (const match of code.matchAll(tokenPattern)) {
+    html += escapeHtml(code.slice(lastIndex, match.index));
+    const token = match[0];
+    const klass = token.startsWith("//") || token.startsWith("#") || token.startsWith("/*")
+      ? "tk-com"
+      : token.startsWith("\"") || token.startsWith("'") || token.startsWith("`")
+        ? "tk-str"
+        : /\b(?:async|await|break|case|catch|class|const|continue|def|default|else|export|finally|for|from|function|if|import|in|let|new|null|return|throw|try|true|false|var|while|yield)\b/.test(token)
+          ? "tk-key"
+          : "tk-fn";
+    html += `<span class="${klass}">${escapeHtml(token)}</span>`;
+    lastIndex = (match.index || 0) + token.length;
+  }
+  html += escapeHtml(code.slice(lastIndex));
+  return html;
 }
 
 function renderMarkdownBlocks(block) {
@@ -2288,7 +2551,21 @@ function renderInlineCode(text) {
   if (isSafeHttpUrl(trimmed)) {
     return `<a class="inline-url-code" href="${escapeHtml(new URL(trimmed).href)}" target="_blank" rel="noopener noreferrer"><code>${escapeHtml(source)}</code></a>`;
   }
+  const fileChip = inlineFileChipHtml(trimmed);
+  if (fileChip) {
+    return fileChip;
+  }
   return `<code>${escapeHtml(source)}</code>`;
+}
+
+function inlineFileChipHtml(value) {
+  const match = String(value || "").match(/^(.+\.(?:md|markdown|txt|json|jsonl|csv|tsv|log|html|htm|css|js|jsx|ts|tsx|xml|yaml|yml|py|sql|sh|toml))(?:[:#L](\d+))?$/i);
+  if (!match || /^https?:\/\//i.test(value)) {
+    return "";
+  }
+  const [, file, line] = match;
+  const lineHtml = line ? `<span class="line">line ${escapeHtml(line)}</span>` : "";
+  return `<span class="file-chip" title="${escapeAttribute(value)}"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6"/></svg>${escapeHtml(file)}${lineHtml}</span>`;
 }
 
 function renderLinkedText(text) {
@@ -2384,122 +2661,46 @@ function splitTableRow(line) {
     .map((cell) => cell.trim());
 }
 
-function resourcesFromText(text, task = null) {
-  const source = String(text || "");
-  const pattern = /(^|[\s("'`“”‘’《【：:])((?:\/[A-Za-z0-9._~+@%=-][^\s"'<>)]*|(?:\.{1,2}\/)?(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.@%+-][^\s"'<>)]*|[A-Za-z0-9_.@%+-]+)\.(?:md|markdown|txt|json|jsonl|csv|tsv|log|html|pdf|png|jpe?g|webp))(?:[:#]\d+)?/gi;
+function resourcesFromCompletedArtifacts(artifacts) {
   const resources = [];
   const seen = new Set();
-  for (const resource of resourcesFromCompletedArtifacts(task?.completedArtifacts || [])) {
-    const key = resource.url || resource.path;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    resources.push(resource);
-  }
-  let match;
-  while ((match = pattern.exec(source))) {
-    const filePath = match[2];
-    if (!filePath || filePath.includes("://") || seen.has(filePath)) continue;
-    seen.add(filePath);
-    resources.push({
-      type: "file",
-      path: filePath,
-      name: basename(filePath),
-      extension: fileExtension(filePath),
-    });
-  }
-  for (const resource of larkDocumentResourcesFromText(source)) {
-    if (seen.has(resource.url)) continue;
-    seen.add(resource.url);
-    resources.push(resource);
-  }
-  return resources.slice(0, 12);
-}
-
-function resourcesFromCompletedArtifacts(artifacts) {
-  return artifacts.flatMap((artifact) => {
+  for (const artifact of artifacts) {
     if (artifact?.kind === "lark_doc" && artifact.url) {
-      return [{
+      if (seen.has(artifact.url)) continue;
+      seen.add(artifact.url);
+      resources.push({
         type: "lark-doc",
         url: artifact.url,
-        name: "飞书文档",
+        name: artifact.name || artifact.title || "飞书文档",
         extension: "doc",
-      }];
+        exists: artifact.exists !== false,
+        verified: true,
+      });
+      continue;
     }
     const filePath = artifact?.relativePath || artifact?.path;
     if (artifact?.type === "local_file" && filePath) {
-      return [{
+      if (seen.has(filePath)) continue;
+      seen.add(filePath);
+      resources.push({
         type: "file",
         path: filePath,
         name: basename(filePath),
         extension: fileExtension(filePath),
-      }];
+        exists: artifact.exists !== false,
+        verified: true,
+      });
     }
-    return [];
-  });
-}
-
-function larkDocumentResourcesFromText(text) {
-  const resources = [];
-  const seen = new Set();
-  const urlPattern = /https?:\/\/[^\s<>"'`]+/g;
-  let match;
-  while ((match = urlPattern.exec(text))) {
-    const clean = match[0].replace(/[.,;:!?，。！？；：、\])}）】》]+$/u, "");
-    if (!isLarkDocumentUrl(clean) || seen.has(clean)) continue;
-    seen.add(clean);
-    resources.push({
-      type: "lark-doc",
-      url: clean,
-      name: inferLarkDocumentTitle(text, clean),
-      extension: "doc",
-    });
   }
-  return resources;
-}
-
-function isLarkDocumentUrl(url) {
-  try {
-    const parsed = new URL(url);
-    return /(^|\.)larkoffice\.com$/i.test(parsed.hostname)
-      && /^\/(docx|docs|wiki|mindnotes|base|sheets|slides)\//.test(parsed.pathname);
-  } catch {
-    return false;
-  }
-}
-
-function inferLarkDocumentTitle(text, url) {
-  const lines = String(text || "").split(/\r?\n/);
-  const index = lines.findIndex((line) => line.includes(url));
-  const candidates = [];
-  if (index >= 0) {
-    candidates.push(lines[index].slice(0, lines[index].indexOf(url)));
-    candidates.push(lines[index - 1] || "");
-    candidates.push(lines[index - 2] || "");
-  }
-  for (const candidate of candidates) {
-    const title = cleanDeliveryTitle(candidate);
-    if (title) return title;
-  }
-  return "飞书文档";
-}
-
-function cleanDeliveryTitle(value) {
-  const cleaned = String(value || "")
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/^[\s\-*•·]+/, "")
-    .replace(/[`*_#]/g, "")
-    .replace(/^(?:已创建|创建了)?\s*(?:文档链接|链接|标题|飞书文档|文档)\s*[:：]\s*/i, "")
-    .trim();
-  if (!cleaned || cleaned.length > 80) return "";
-  return cleaned;
+  return resources.slice(0, 12);
 }
 
 function resourceCardsHtml(resources, task) {
   if (!resources.length) return "";
   const workspacePath = task.workspacePath || els.workspaceInput.value.trim();
   return `
-    <section class="delivery-section">
-      <div class="section-title">交付内容</div>
+    <section class="delivery">
+      <div class="delivery-title">交付内容（已通过后端校验）</div>
       <div class="resource-list">
       ${resources.map((resource) => {
         if (resource.type === "lark-doc") {
@@ -2507,14 +2708,14 @@ function resourceCardsHtml(resources, task) {
         }
         return `
           <div class="resource-card">
-            <div class="resource-icon">${escapeHtml(resourceIcon(resource))}</div>
+            <div class="resource-icon${resource.exists ? " verified" : " missing"}">${escapeHtml(resourceIcon(resource))}</div>
             <div class="resource-info">
-              <div class="resource-name">${escapeHtml(resource.name)}</div>
-              <div class="resource-path">${escapeHtml(resourceMeta(resource, resource.path))}</div>
+              <div class="resource-name">${escapeHtml(resource.name)} ${resource.exists ? `<span class="verified-badge">✓ verified</span>` : `<span class="missing-badge">missing</span>`}</div>
+              <div class="resource-path">${escapeHtml(resourceMeta(resource, resource.path))} · exists: ${resource.exists ? "true" : "false"}</div>
             </div>
             <div class="resource-actions">
-              <button class="resource-btn" data-file-action="open" data-resource-path="${escapeHtml(resource.path)}" data-workspace-path="${escapeHtml(workspacePath)}">查看</button>
-              <button class="resource-btn" data-file-action="reveal" data-resource-path="${escapeHtml(resource.path)}" data-workspace-path="${escapeHtml(workspacePath)}">定位</button>
+              ${resource.exists ? `<button class="resource-btn" data-file-action="open" data-resource-path="${escapeHtml(resource.path)}" data-workspace-path="${escapeHtml(workspacePath)}">查看</button>` : ""}
+              ${resource.exists ? `<button class="resource-btn" data-file-action="reveal" data-resource-path="${escapeHtml(resource.path)}" data-workspace-path="${escapeHtml(workspacePath)}">定位</button>` : ""}
             </div>
           </div>
         `;
@@ -2527,10 +2728,10 @@ function resourceCardsHtml(resources, task) {
 function larkResourceCardHtml(resource) {
   return `
     <div class="resource-card lark-resource">
-      <div class="resource-icon">DOC</div>
+      <div class="resource-icon verified">DOC</div>
       <div class="resource-info">
-        <div class="resource-name">${escapeHtml(resource.name || "飞书文档")}</div>
-        <div class="resource-path">${escapeHtml(resourceMeta(resource, resource.url))}</div>
+        <div class="resource-name">${escapeHtml(resource.name || "飞书文档")} <span class="verified-badge">✓ verified</span></div>
+        <div class="resource-path">${escapeHtml(resourceMeta(resource, resource.url))} · exists: true</div>
       </div>
       <div class="resource-actions">
         <a class="resource-btn resource-btn-primary" href="${escapeAttribute(resource.url)}" target="_blank" rel="noopener noreferrer">打开</a>
@@ -2752,8 +2953,9 @@ function newTask() {
 }
 
 function setStatus(status) {
-  els.taskStatus.textContent = statusLabel(status);
-  els.taskStatus.className = `status-pill ${status || ""}`;
+  const providerIssue = status === "failed" && providerResourceIssue(state.activeArtifact);
+  els.taskStatus.textContent = providerIssue ? "资源不足" : statusLabel(status);
+  els.taskStatus.className = `status-pill ${providerIssue ? "warning" : (status || "")}`;
 }
 
 function updateButtons() {
@@ -2842,6 +3044,11 @@ function scrollMessagesToBottom() {
   els.messages.scrollTop = els.messages.scrollHeight;
 }
 
+function isMessagesNearBottom() {
+  const distance = els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight;
+  return distance < 80;
+}
+
 function showToast(message) {
   els.toast.textContent = message;
   els.toast.classList.add("show");
@@ -2878,6 +3085,18 @@ function errorText(error) {
   } catch {
     return String(error);
   }
+}
+
+function providerResourceIssue(task) {
+  const text = [
+    errorText(task?.error),
+    task?.completionVerification?.reason,
+    ...(task?.completionVerification?.unrecoverableErrors || []).map((item) => `${item.code || ""} ${item.message || ""}`),
+    ...(task?.events || [])
+      .filter((event) => event.type === "runtime.error" || event.type === "runtime.warning" || event.type === "task.failed")
+      .map((event) => `${event.type} ${errorText(event.params?.error) || errorText(event.params?.message)}`),
+  ].filter(Boolean).join("\n");
+  return /provider_resource_exhausted|资源池资源不足|资源不足|rate limit|限流|-4302/i.test(text);
 }
 
 function basename(value) {

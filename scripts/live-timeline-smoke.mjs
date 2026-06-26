@@ -63,6 +63,7 @@ async function testModelHubStreamBridge() {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
       });
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "先分析" } }] })}\n\n`);
       response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "我先" } }] })}\n\n`);
       response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "检查" } }] })}\n\n`);
       response.write("data: [DONE]\n\n");
@@ -95,10 +96,16 @@ async function testModelHubStreamBridge() {
     assert.equal(response.status, 200);
     assert.equal(receivedBody.stream, true);
     assert.match(text, /response\.created/);
+    assert.match(text, /response\.reasoning_summary_text\.delta/);
     assert.match(text, /response\.output_text\.delta/);
+    assert.match(text, /先分析/);
     assert.match(text, /我先/);
     assert.match(text, /检查/);
     assert.match(text, /response\.completed/);
+    const outputTextFrames = text
+      .split(/\r?\n\r?\n/)
+      .filter((frame) => frame.includes("response.output_text.delta"));
+    assert.equal(outputTextFrames.some((frame) => frame.includes("先分析")), false);
   } finally {
     await adapter.close();
     await new Promise((resolve) => upstream.close(resolve));

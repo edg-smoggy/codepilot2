@@ -20,6 +20,7 @@
     "smoke:modelhub:loop": "node scripts/modelhub-codex-loop-smoke.mjs",
     "smoke:modelhub:matrix": "node scripts/modelhub-task-matrix-smoke.mjs",
     "smoke:modelhub:html": "node scripts/html-artifact-reliability-smoke.mjs",
+    "smoke:modelhub:reasoning": "node scripts/modelhub-stream-reasoning-smoke.mjs",
     "smoke:queue": "node scripts/task-queue-smoke.mjs",
     "smoke:completion-guard": "node scripts/completion-guard-smoke.mjs",
     "smoke:real-tasks": "node scripts/run-real-task-suite.mjs",
